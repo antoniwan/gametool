@@ -8,7 +8,7 @@ import struct
 from typing import List, Tuple, Optional, Any
 from data_types import DataType
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 console = Console()
 
@@ -22,6 +22,7 @@ class MemoryScanner:
         self.pm = None
         self.current_results: List[Tuple[int, Any]] = []  # List of (address, value) tuples
         self.data_type: Optional[DataType] = None
+        self.cached_regions: Optional[List[Tuple[int, int]]] = None  # Cache regions to avoid re-scanning
         
     def attach(self) -> bool:
         """Attach to the process."""
@@ -59,6 +60,7 @@ class MemoryScanner:
         """Get list of readable memory regions as (start, size) tuples."""
         regions = []
         address = 0
+        scanned_count = 0
         
         try:
             # Scan full user-mode address space (can be larger than 0x7FFFFFFF on 64-bit)
@@ -66,22 +68,26 @@ class MemoryScanner:
                 try:
                     mbi = self.pm.virtual_query(address)
                     region_size = mbi.RegionSize
+                    scanned_count += 1
+                    
+                    # Log progress every 50 regions for better visibility
+                    if scanned_count % 50 == 0:
+                        console.print(f"[dim]Scanned {scanned_count:,} memory regions, found {len(regions)} readable... @ {hex(address)}[/dim]", end="\r")
                     
                     # Check if region is committed (STATE = MEM_COMMIT = 0x1000)
                     if mbi.State == 0x1000:
-                        # More permissive: scan PAGE_GUARD protected regions too
-                        # This includes: PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-                        # PAGE_READONLY, PAGE_EXECUTE, PAGE_EXECUTE_READWRITE
                         regions.append((address, region_size))
                     
                     address += region_size
-                except:
+                except Exception as e:
                     # If virtual_query fails, try to advance by a small amount
                     address += 0x1000  # 4KB page size
                     
         except Exception as e:
-            console.print(f"[dim]Region scanning stopped: {e}[/dim]")
+            console.print(f"\n[dim]Region scanning stopped: {e}[/dim]")
         
+        # Print final status
+        console.print(f"\n[dim]Total regions scanned: {scanned_count:,}[/dim]")
         return regions
     
     def scan(self, target_value: Any) -> int:
@@ -102,8 +108,17 @@ class MemoryScanner:
             raise ValueError(f"Invalid value for {self.data_type.name}")
         
         self.current_results.clear()
-        regions = self._get_readable_memory_regions()
+        
+        # Use cached regions if available, otherwise discover them
+        if self.cached_regions is None:
+            console.print("[cyan]Step 1/2: Discovering readable memory regions...[/cyan]")
+            console.print("[dim]This scans the entire address space to find accessible memory regions.[/dim]\n")
+            self.cached_regions = self._get_readable_memory_regions()
+        
+        regions = self.cached_regions
         total_size = sum(size for _, size in regions)
+        console.print(f"[green]Found {len(regions)} memory regions to scan ({total_size / 1024 / 1024:.2f} MB total)[/green]")
+        console.print(f"[cyan]Scanning memory for value {target_value}...[/cyan]\n")
         
         with Progress(
             SpinnerColumn(),
@@ -113,15 +128,17 @@ class MemoryScanner:
             console=console
         ) as progress:
             task = progress.add_task(
-                f"Scanning {len(regions)} memory regions for value {target_value}...", 
+                f"Region 0/{len(regions)} [{len(self.current_results)} found]", 
                 total=total_size
             )
             
             for region_idx, (start_address, size) in enumerate(regions, 1):
-                progress.update(
-                    task, 
-                    description=f"Region {region_idx}/{len(regions)} [{len(self.current_results)} found] @ {hex(start_address)}..."
-                )
+                # Update every 10 regions to avoid excessive updates
+                if region_idx % 10 == 1:
+                    progress.update(
+                        task, 
+                        description=f"Region {region_idx}/{len(regions)} [{len(self.current_results)} found]"
+                    )
                 
                 # Read in chunks for performance
                 chunk_size = 64 * 1024  # 64KB chunks
@@ -141,13 +158,12 @@ class MemoryScanner:
                                     try:
                                         val = struct.unpack(self.data_type.struct_code, data[i:i + self.data_type.size])[0]
                                         self.current_results.append((addr, val))
-                                        # Update progress with found count
-                                        progress.update(task, description=f"Region {region_idx}/{len(regions)} [{len(self.current_results)} found] @ {hex(start_address)}...")
                                     except:
                                         pass
                     
                     progress.update(task, advance=min(actual_size, size - offset))
         
+        console.print(f"\n[green]Scan complete! Found {len(self.current_results)} addresses[/green]\n")
         return len(self.current_results)
     
     def filter_scan(self, new_value: Any) -> int:

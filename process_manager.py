@@ -26,10 +26,10 @@ def list_processes(show_all: bool = False) -> List[Tuple[int, str, float]]:
         'RuntimeBroker.exe', 'SearchIndexer.exe', 'spoolsv.exe'
     }
     
-    # Common Windows executables that are typically not user programs
-    windows_executables = [
-        'explorer.exe', 'dllhost.exe', 'WerFault.exe', 'ApplicationFrameHost.exe'
-    ]
+    # Common Windows executables that are typically not user programs (lowercase for case-insensitive comparison)
+    windows_executables = {
+        'explorer.exe', 'dllhost.exe', 'werfault.exe', 'applicationframehost.exe'
+    }
     
     processes = []
     for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
@@ -45,8 +45,8 @@ def list_processes(show_all: bool = False) -> List[Tuple[int, str, float]]:
                     continue
                 if memory_mb < 1.0:  # Skip processes using less than 1MB
                     continue
-                # Skip Windows system executables
-                if name.lower() in [x.lower() for x in windows_executables]:
+                # Skip Windows system executables (case-insensitive check)
+                if name.lower() in windows_executables:
                     continue
             
             processes.append((pid, name, memory_mb))
