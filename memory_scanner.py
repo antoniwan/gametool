@@ -63,31 +63,34 @@ class MemoryScanner:
         scanned_count = 0
         
         try:
-            # Scan full user-mode address space (can be larger than 0x7FFFFFFF on 64-bit)
-            while address < 0x7FFFFFFFFFFFFFFF:  # Full 64-bit user space
+            # Limit to reasonable 64-bit address space (up to 128GB)
+            max_address = 0x2000000000  # 128 GB, reasonable upper bound
+            
+            while address < max_address:
                 try:
                     mbi = self.pm.virtual_query(address)
                     region_size = mbi.RegionSize
                     scanned_count += 1
                     
-                    # Log progress every 50 regions for better visibility
-                    if scanned_count % 50 == 0:
-                        console.print(f"[dim]Scanned {scanned_count:,} memory regions, found {len(regions)} readable... @ {hex(address)}[/dim]", end="\r")
+                    # Log progress every 100 regions for visibility
+                    if scanned_count % 100 == 0:
+                        console.print(f"[dim]Scanned {scanned_count:,} regions, found {len(regions):,} readable @ {hex(address)[:14]}...[/dim]", end="\r")
                     
-                    # Check if region is committed (STATE = MEM_COMMIT = 0x1000)
-                    if mbi.State == 0x1000:
+                    # Check if region is committed 
+                    if mbi.State == 0x1000:  # MEM_COMMIT
+                        # Accept all committed pages regardless of protection (more aggressive)
                         regions.append((address, region_size))
                     
                     address += region_size
-                except Exception as e:
-                    # If virtual_query fails, try to advance by a small amount
+                except Exception:
+                    # If virtual_query fails, advance by page size
                     address += 0x1000  # 4KB page size
                     
         except Exception as e:
             console.print(f"\n[dim]Region scanning stopped: {e}[/dim]")
         
         # Print final status
-        console.print(f"\n[dim]Total regions scanned: {scanned_count:,}[/dim]")
+        console.print(f"\n[dim]Scanned {scanned_count:,} total regions, found {len(regions):,} readable[/dim]")
         return regions
     
     def scan(self, target_value: Any) -> int:
@@ -118,7 +121,8 @@ class MemoryScanner:
         regions = self.cached_regions
         total_size = sum(size for _, size in regions)
         console.print(f"[green]Found {len(regions)} memory regions to scan ({total_size / 1024 / 1024:.2f} MB total)[/green]")
-        console.print(f"[cyan]Scanning memory for value {target_value}...[/cyan]\n")
+        console.print(f"[cyan]Scanning memory for value {target_value}...[/cyan]")
+        console.print(f"[dim]Target bytes: {target_bytes.hex()} ({self.data_type.name})[/dim]\n")
         
         with Progress(
             SpinnerColumn(),
