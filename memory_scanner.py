@@ -110,7 +110,6 @@ class MemoryScanner:
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("| Found: {task.completed} results", justify="right"),
             console=console
         ) as progress:
             task = progress.add_task(
@@ -121,7 +120,7 @@ class MemoryScanner:
             for region_idx, (start_address, size) in enumerate(regions, 1):
                 progress.update(
                     task, 
-                    description=f"Region {region_idx}/{len(regions)} @ {hex(start_address)}..."
+                    description=f"Region {region_idx}/{len(regions)} [{len(self.current_results)} found] @ {hex(start_address)}..."
                 )
                 
                 # Read in chunks for performance
@@ -142,6 +141,8 @@ class MemoryScanner:
                                     try:
                                         val = struct.unpack(self.data_type.struct_code, data[i:i + self.data_type.size])[0]
                                         self.current_results.append((addr, val))
+                                        # Update progress with found count
+                                        progress.update(task, description=f"Region {region_idx}/{len(regions)} [{len(self.current_results)} found] @ {hex(start_address)}...")
                                     except:
                                         pass
                     
