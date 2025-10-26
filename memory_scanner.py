@@ -62,6 +62,7 @@ class MemoryScanner:
         regions = []
         address = 0
         scanned_count = 0
+        discovered_count = 0
         
         try:
             # Limit to reasonable 64-bit address space (up to 128GB)
@@ -75,12 +76,20 @@ class MemoryScanner:
                     
                     # Log progress every 100 regions for visibility
                     if scanned_count % 100 == 0:
-                        console.print(f"[dim]Scanned {scanned_count:,} regions, found {len(regions):,} readable @ {hex(address)[:14]}...[/dim]", end="\r")
+                        console.print(f"[dim]Scanned {scanned_count:,} regions, testing {len(regions):,} @ {hex(address)[:14]}...[/dim]", end="\r")
                     
                     # Check if region is committed 
                     if mbi.State == 0x1000:  # MEM_COMMIT
-                        # Accept all committed pages regardless of protection (more aggressive)
-                        regions.append((address, region_size))
+                        # Test if we can actually READ this region
+                        try:
+                            # Try to read a small chunk to verify accessibility
+                            test_data = self.pm.read_bytes(address, min(0x1000, region_size))
+                            if test_data:
+                                regions.append((address, region_size))
+                                discovered_count += 1
+                        except:
+                            # Region exists but not readable, skip it
+                            pass
                     
                     address += region_size
                 except Exception:
@@ -91,7 +100,7 @@ class MemoryScanner:
             console.print(f"\n[dim]Region scanning stopped: {e}[/dim]")
         
         # Print final status
-        console.print(f"\n[dim]Scanned {scanned_count:,} total regions, found {len(regions):,} readable[/dim]")
+        console.print(f"\n[dim]Scanned {scanned_count:,} total regions, found {discovered_count:,} actually readable[/dim]")
         return regions
     
     def scan(self, target_value: Any) -> int:
