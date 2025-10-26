@@ -8,7 +8,7 @@ import struct
 from typing import List, Tuple, Optional, Any
 from data_types import DataType
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TaskProgressColumn
 
 console = Console()
 
@@ -48,8 +48,11 @@ class MemoryScanner:
     def _read_memory_region(self, start_address: int, size: int) -> Optional[bytes]:
         """Read a memory region safely."""
         try:
-            return self.pm.read_bytes(start_address, size)
-        except:
+            # Try to read the memory region
+            data = self.pm.read_bytes(start_address, size)
+            return data
+        except Exception as e:
+            # If read fails for this region, return None
             return None
     
     def _get_readable_memory_regions(self) -> List[Tuple[int, int]]:
@@ -58,18 +61,26 @@ class MemoryScanner:
         address = 0
         
         try:
-            while address < 0x7FFFFFFF:  # User mode address space on 32-bit
-                mbi = self.pm.virtual_query(address)
-                region_size = mbi.RegionSize
-                
-                # Check if region is readable and committed
-                if mbi.State == 0x1000 and mbi.Protect in [0x04, 0x20, 0x40]:  # PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE
-                    regions.append((address, region_size))
-                
-                address += region_size
-                
-        except:
-            pass
+            # Scan full user-mode address space (can be larger than 0x7FFFFFFF on 64-bit)
+            while address < 0x7FFFFFFFFFFFFFFF:  # Full 64-bit user space
+                try:
+                    mbi = self.pm.virtual_query(address)
+                    region_size = mbi.RegionSize
+                    
+                    # Check if region is committed (STATE = MEM_COMMIT = 0x1000)
+                    if mbi.State == 0x1000:
+                        # More permissive: scan PAGE_GUARD protected regions too
+                        # This includes: PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+                        # PAGE_READONLY, PAGE_EXECUTE, PAGE_EXECUTE_READWRITE
+                        regions.append((address, region_size))
+                    
+                    address += region_size
+                except:
+                    # If virtual_query fails, try to advance by a small amount
+                    address += 0x1000  # 4KB page size
+                    
+        except Exception as e:
+            console.print(f"[dim]Region scanning stopped: {e}[/dim]")
         
         return regions
     
@@ -99,12 +110,19 @@ class MemoryScanner:
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("| Found: {task.completed} results", justify="right"),
             console=console
         ) as progress:
-            task = progress.add_task("Scanning memory...", total=total_size)
+            task = progress.add_task(
+                f"Scanning {len(regions)} memory regions for value {target_value}...", 
+                total=total_size
+            )
             
-            for start_address, size in regions:
-                progress.update(task, description=f"Scanning {hex(start_address)}...")
+            for region_idx, (start_address, size) in enumerate(regions, 1):
+                progress.update(
+                    task, 
+                    description=f"Region {region_idx}/{len(regions)} @ {hex(start_address)}..."
+                )
                 
                 # Read in chunks for performance
                 chunk_size = 64 * 1024  # 64KB chunks
@@ -112,19 +130,22 @@ class MemoryScanner:
                     actual_size = min(chunk_size, size - offset)
                     data = self._read_memory_region(start_address + offset, actual_size)
                     
-                    if data and len(data) == actual_size:
+                    if data and len(data) > 0:
                         # Search for matching bytes
-                        for i in range(len(data) - self.data_type.size + 1):
-                            if data[i:i + self.data_type.size] == target_bytes:
-                                addr = start_address + offset + i
-                                # Verify by reading the value
-                                try:
-                                    val = struct.unpack(self.data_type.struct_code, data[i:i + self.data_type.size])[0]
-                                    self.current_results.append((addr, val))
-                                except:
-                                    pass
+                        # Only scan if we have enough data for the data type
+                        if len(data) >= self.data_type.size:
+                            for i in range(len(data) - self.data_type.size + 1):
+                                # Compare bytes
+                                if data[i:i + self.data_type.size] == target_bytes:
+                                    addr = start_address + offset + i
+                                    # Verify by reading the value
+                                    try:
+                                        val = struct.unpack(self.data_type.struct_code, data[i:i + self.data_type.size])[0]
+                                        self.current_results.append((addr, val))
+                                    except:
+                                        pass
                     
-                    progress.update(task, advance=actual_size)
+                    progress.update(task, advance=min(actual_size, size - offset))
         
         return len(self.current_results)
     
