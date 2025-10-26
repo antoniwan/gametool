@@ -54,6 +54,7 @@ class MemoryScanner:
             return data
         except Exception as e:
             # If read fails for this region, return None
+            # This is normal - many regions are not readable
             return None
     
     def _get_readable_memory_regions(self) -> List[Tuple[int, int]]:
@@ -122,7 +123,8 @@ class MemoryScanner:
         total_size = sum(size for _, size in regions)
         console.print(f"[green]Found {len(regions)} memory regions to scan ({total_size / 1024 / 1024:.2f} MB total)[/green]")
         console.print(f"[cyan]Scanning memory for value {target_value}...[/cyan]")
-        console.print(f"[dim]Target bytes: {target_bytes.hex()} ({self.data_type.name})[/dim]\n")
+        console.print(f"[dim]Target bytes (hex): {target_bytes.hex()} ({self.data_type.name})[/dim]")
+        console.print(f"[dim]Searching for byte pattern of length {len(target_bytes)}...[/dim]\n")
         
         with Progress(
             SpinnerColumn(),
@@ -155,14 +157,15 @@ class MemoryScanner:
                         # Only scan if we have enough data for the data type
                         if len(data) >= self.data_type.size:
                             for i in range(len(data) - self.data_type.size + 1):
-                                # Compare bytes
-                                if data[i:i + self.data_type.size] == target_bytes:
+                                # Compare bytes using direct byte comparison
+                                chunk = data[i:i + self.data_type.size]
+                                if chunk == target_bytes:
                                     addr = start_address + offset + i
                                     # Verify by reading the value
                                     try:
-                                        val = struct.unpack(self.data_type.struct_code, data[i:i + self.data_type.size])[0]
+                                        val = struct.unpack(self.data_type.struct_code, chunk)[0]
                                         self.current_results.append((addr, val))
-                                    except:
+                                    except Exception:
                                         pass
                     
                     progress.update(task, advance=min(actual_size, size - offset))
